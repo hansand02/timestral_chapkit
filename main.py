@@ -12,6 +12,7 @@
 # boilerplate that chapkit needs and you almost never have to touch.
 # =====================================================================
 
+import asyncio
 import os
 from functools import cache
 from pathlib import Path
@@ -62,7 +63,7 @@ async def on_train(
 ) -> Any:
     """Zero-shot: nothing to train. Download the weights and return only the model id,
     since chapkit pickles whatever is returned into its database."""
-    load_model(MODEL_ID)
+    await asyncio.to_thread(load_model, MODEL_ID)  # off the event loop, so polls still get answered
     log.info("model_ready", model_id=MODEL_ID)
     return MODEL_ID
 
@@ -76,7 +77,7 @@ async def on_predict(
 ) -> DataFrame:
     """Forecast with Timestral. Covariates come from the config's additional_continuous_covariates
     (known over past and future); none means target history only."""
-    forecaster = load_model(model)
+    forecaster = await asyncio.to_thread(load_model, model)
     past = historic.to_pandas()
     future_df = future.to_pandas()
     both = pd.concat([past, future_df])
@@ -110,8 +111,9 @@ async def on_predict(
         else None
     )
 
-    forecast = forecaster.forecast(
-        context.values, prediction_length=len(future_periods), known_covariates=known
+    # Slow, CPU-bound torch call: run it in a thread so the server keeps answering polls and /health.
+    forecast = await asyncio.to_thread(
+        forecaster.forecast, context.values, prediction_length=len(future_periods), known_covariates=known
     )
     quantiles = np.asarray(forecast.quantiles)[
         :, 0
